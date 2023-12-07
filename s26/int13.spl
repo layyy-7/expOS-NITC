@@ -1,0 +1,137 @@
+alias usersp R1;
+usersp=SP;
+
+alias currPID R2;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+//changing the SP from pointing to user stack to pointing to kernel stack
+[PROCESS_TABLE+currPID*16+13]=SP;
+SP=[(PROCESS_TABLE+currPID*16)+11]*512-1;
+
+alias ptbr R3;
+ptbr=[PROCESS_TABLE+currPID*16+14];
+
+//extracting the system call number
+alias syscall R4;
+syscall=[([ptbr+2*((usersp-5)/512)]*512)+((usersp-5)%512)];
+
+//setting mode flag to the extracted system call number
+[PROCESS_TABLE+currPID*16+9]=syscall;
+
+
+//semget system call
+if(syscall==17)
+then 
+	//finding the index of a free entry in the Per Process Resource Table
+	//this will be our semaphore descriptor
+	alias index R5;
+	index=0;
+	
+	while(index<8)
+	do
+		if([[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2]==-1)
+		then
+			break;
+		endif;
+		
+		index=index+1;
+	endwhile;
+	
+	
+	//process has reached its limit of resources 
+	if(index==8)
+	then
+		[PROCESS_TABLE+currPID*16+9]=0;
+		[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=-1;
+		
+		SP=usersp;
+		ireturn;
+	endif;
+	
+	
+	//resource identifier field of the per-process resource table entry is set to 1 to indicate that the resource is a semaphore
+	[[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2]=1;
+	
+	
+	//invoking the acquire semaphore function
+	multipush(R1,R2,R3,R4,R5);
+	
+	R1=6;
+	R2=currPID;
+	
+	call RESOURCE_MANAGER;
+	
+	alias semindex R6;
+	semindex=R0;
+	
+	multipop(R1,R2,R3,R4,R5);
+	
+	
+	//number of semaphores has reached its maximum
+	if(semindex==-1)
+	then
+		[PROCESS_TABLE+currPID*16+9]=0;
+		[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=-2;
+		
+		SP=usersp;
+		ireturn;
+	endif;
+	
+	
+	//storing the index of the Semaphore table entry in the Per Process Resource Table entry 
+	[[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2+1]=semindex;
+	
+	
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=index;
+		
+	SP=usersp;
+	ireturn;
+endif;
+
+
+//semrelease system call
+if(syscall==18)
+then
+	//if any semaphore is not released by a process during execution using Semrelease system call, 
+	//then the semaphore is released at the time of termination of the process in Exit system call
+	
+	
+	//extracting the semid
+	alias index R5;
+	index=[([ptbr+2*((usersp-4)/512)]*512)+((usersp-4)%512)];
+	
+	
+	//if Semaphore descriptor is not valid or the entry in the Per Process Resource Table is not valid
+	if(index<0 || index>7 || [[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2]!=1)
+	then
+		[PROCESS_TABLE+currPID*16+9]=0;
+		[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=-1;
+		
+		SP=usersp;
+		ireturn;	
+	endif;
+	
+	
+	//invoking the release semaphore function 
+	multipush(R1,R2,R3,R4,R5);
+	
+	R1=7;
+	R3=currPID;
+	R2=[[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2+1];
+	
+	call RESOURCE_MANAGER;
+	
+	multipop(R1,R2,R3,R4,R5);
+	
+	
+	//invalidating the Per-Process resource table entry
+	[[PROCESS_TABLE+currPID*16+11]*512+RESOURCE_TABLE_OFFSET+index*2]=-1;
+	
+	
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=0;
+		
+	SP=usersp;
+	ireturn;
+endif;

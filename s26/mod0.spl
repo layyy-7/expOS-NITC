@@ -1,0 +1,328 @@
+alias funcnum R1;
+
+
+//Acquire Buffer function
+if(funcnum==1)
+then
+	//arguments which are not common to all functions
+	alias bufferindex R2;
+	alias currpid R3;
+	
+	
+	//while Buffer is locked
+	while([BUFFER_TABLE+bufferindex*4+2]!=-1)
+	do
+		//changing state of current process
+		[PROCESS_TABLE+currpid*16+4]=WAIT_BUFFER;
+		[PROCESS_TABLE+currpid*16+5]=bufferindex;
+		
+		
+		//invoking the scheduler
+		multipush(R1,R2,R3);
+		call SCHEDULER;
+		multipop(R1,R2,R3);
+	endwhile;
+	
+	
+	//locking the Buffer by setting the PID of the current process in the Locking PID field
+	[BUFFER_TABLE+bufferindex*4+2]=currpid;
+	
+	
+	return;
+endif;
+
+
+//Release Buffer function
+if(funcnum==2)
+then
+	//arguments which are not common to all functions
+	alias bufferindex R2;
+	alias currpid R3;
+
+	
+	//if PID given as input is not equal to the LOCKING PID
+	if([BUFFER_TABLE+bufferindex*4+2]!=currpid)
+	then
+		R0=-1;
+		return;
+	endif;	
+	
+	
+	//freeing the lock in the the Buffer Status Table entry corresponding to the buffer Number
+	[BUFFER_TABLE+bufferindex*4+2]=-1;
+	
+	
+	alias count R4;
+	count=0;
+	
+	while(count<16)
+	do
+		if([PROCESS_TABLE+currpid*16+4]==WAIT_BUFFER && [PROCESS_TABLE+currpid*16+5]==bufferindex)
+		then
+			[PROCESS_TABLE+currpid*16+4]=READY;
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	R0=0;
+	return;
+endif;
+
+
+//Acquire Disk Function
+if(funcnum==3)
+then
+	//arguments which are not common to all functions
+	alias currpid R2;
+
+	
+	//while the disk is busy
+	while([DISK_STATUS_TABLE]==1)
+	do
+		//change the state of current process to wait_disk
+		[PROCESS_TABLE+currpid*16+4]=WAIT_DISK;
+
+		
+		//invoke scheduler to schedule some other process
+		multipush(R1,R2);
+		call SCHEDULER;
+		multipop(R1,R2); 
+	endwhile; 
+
+	
+	//When the disk is finally free, the process is woken up by the disk interrupt handler
+	//lock the disk by changing Disk Status Table attributes
+	[DISK_STATUS_TABLE]=1;
+	[DISK_STATUS_TABLE+4]=currpid;
+	
+	
+	return;	
+endif;
+
+
+//Acquire Inode function
+if(funcnum==4)
+then
+	//arguments which are not common to all functions
+	alias inodeindex R2;
+	alias currpid R3;
+	
+	
+	//while inode is locked by some other process 	
+	while([FILE_STATUS_TABLE+inodeindex*4]!=-1)
+	do
+		[PROCESS_TABLE+currpid*16+4]=WAIT_FILE;
+		[PROCESS_TABLE+currpid*16+5]=inodeindex;
+		
+		
+		//invoking the scheduler
+		multipush(R1,R2,R3);
+		call SCHEDULER;
+		multipop(R1,R2,R3);
+	endwhile;
+	
+	
+	//file was deleted by the time the inode was acquired
+	if([INODE_TABLE+inodeindex*16+1]==-1)
+	then
+		R0=-1;
+		return;
+	endif;
+	
+	
+	//locking the Inode
+	[FILE_STATUS_TABLE+inodeindex*4]=currpid;
+	
+	
+	R0=0;
+	return;
+endif;
+
+
+//Release Inode function
+if(funcnum==5)
+then
+	//arguments which are not common to all functions
+	alias inodeindex R2;
+	alias currpid R3;
+
+	
+	//if PID given as input is not equal to the LOCKING PID 
+	if([FILE_STATUS_TABLE+inodeindex*4]!=currpid)
+	then
+		R0=-1;
+		return;
+	endif;	
+	
+	
+	//free the lock in the File Status Table corresponding to the inode index
+	[FILE_STATUS_TABLE+inodeindex*4]=-1;
+	
+	
+	//waking up the processes waiting for the file with given inode index
+	alias count R4;
+	count=0;
+	
+	while(count<16)
+	do
+		if([PROCESS_TABLE+count*16+4]==WAIT_FILE && [PROCESS_TABLE+count*16+5]==inodeindex)
+		then
+			[PROCESS_TABLE+count*16+4]=READY;
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	R0=0;
+	return;
+endif;
+
+
+//Acquire Semaphore function
+if(funcnum==6)
+then
+	//arguments which are not common to all functions
+	alias currpid R2;
+	
+	
+	//finding the index of a free entry in Semaphore table
+	alias semindex R3;
+	semindex=0;
+	
+	while(semindex<32)
+	do
+		if([SEMAPHORE_TABLE+semindex*4+1]==0)
+		then
+			break;
+		endif;
+		
+		semindex=semindex+1;
+	endwhile;	
+	
+	
+	//if no free entry is present in Semaphore Table
+	if(semindex==32)
+	then
+		R0=-1;
+		return;
+	endif;
+	
+	
+	//initializing locking PID and process count for free index found in Semaphore Table
+	[SEMAPHORE_TABLE+semindex*4]=-1;
+	[SEMAPHORE_TABLE+semindex*4+1]=1;
+	
+	
+	R0=semindex;
+	return;
+endif;
+
+
+//Release Semaphore function
+if(funcnum==7)
+then
+	//arguments which are not common to all functions
+	alias semindex R2;
+	alias currPID R3;
+	
+	
+	//if semaphore is locked by the current process
+	if([SEMAPHORE_TABLE+semindex*4]==currPID)
+	then
+		//unlocking the semaphore before release 
+		[SEMAPHORE_TABLE+semindex*4]=-1;
+		
+		
+		//waking up processes blocked by the semaphore 
+		alias count R4;
+		count=0;
+		
+		while(count<16)
+		do
+			if([PROCESS_TABLE+count*16+4]==WAIT_SEMAPHORE && [PROCESS_TABLE+count*16+5]==semindex)
+			then
+				[PROCESS_TABLE+count*16+4]=READY;
+			endif;
+			
+			count=count+1;
+		endwhile;
+	endif;
+	
+	
+	//decrementing the process count of the semaphore in the semaphore table
+	[SEMAPHORE_TABLE+semindex*4+1]=[SEMAPHORE_TABLE+semindex*4+1]-1;
+endif;
+
+
+//Acquire Terminal Function
+if(funcnum==8) 
+then
+	//arguments which are not common to all functions
+	alias currpid R2;
+
+	
+	//while the terminal is busy
+	while([TERMINAL_STATUS_TABLE]==1) 
+	do	
+		// Setting the state of current process to wait_terminal
+		[PROCESS_TABLE+currpid*16+4]=WAIT_TERMINAL;
+
+		
+		//invoke scheduler to schedule some other process
+		multipush(R1,R2);
+		call SCHEDULER;
+		multipop(R1,R2); 
+	endwhile;
+
+		
+	[TERMINAL_STATUS_TABLE]=1;
+	[TERMINAL_STATUS_TABLE+1]=currpid;
+	
+	// breakpoint;
+	return;
+endif;
+	
+		
+//Release Terminal Function		
+if(funcnum==9) 
+then
+	//arguments which are not common to all functions
+	alias currpid R2;
+	
+	
+	if(currpid!=[TERMINAL_STATUS_TABLE+1]) 
+	then
+		R0=-1;	
+		return;	
+	else
+		[TERMINAL_STATUS_TABLE]=0;
+		
+		alias iter R3;
+		iter=0;
+		
+		while(iter<16) 
+		do
+			alias pidval R4;
+			pidval=[PROCESS_TABLE+16*iter+1];
+			
+			if((pidval>0) && (pidval<16)) 
+			then
+				if([PROCESS_TABLE+16*iter+4]==WAIT_TERMINAL) 
+				then
+					[PROCESS_TABLE+16*iter+4]=READY;
+				endif;
+			endif;
+			
+			iter=iter+1;
+		endwhile;
+		
+		
+		R0=0;		
+		return;
+	endif;
+endif;
+
+return;

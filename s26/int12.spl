@@ -1,0 +1,78 @@
+//PID of idle : 0 		(userid=0) 
+//PID of init(login) : 1	(userid=0)
+//PID of shell : 2		(userid=userid of logged in user)
+
+//userid of kernel : 0
+//userid of root : 1
+
+
+alias usersp R1;
+usersp=SP;
+
+alias currPID R2;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+alias ptbr R3;
+ptbr=[PROCESS_TABLE+currPID*16+14];
+
+
+//changing the SP from pointing to user stack to pointing to kernel stack
+[PROCESS_TABLE+currPID*16+13]=SP;
+SP=[(PROCESS_TABLE+currPID*16)+11]*512-1;
+
+//setting mode flag to the system call number
+[PROCESS_TABLE+currPID*16+9]=28;
+
+
+//logout system call can only be executed from the shell process(PID=2)
+if(currPID!=2)
+then
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=-1;
+		
+	SP=usersp;
+	ireturn;
+endif;
+
+
+//invoking kill all
+multipush(R1,R2,R3);
+
+R1=5;
+R2=currPID;
+
+call PROCESS_MANAGER;
+
+multipop(R1,R2,R3);
+
+
+//setting the STATE of the current process(shell) in the process table to TERMINATED
+[PROCESS_TABLE+32+4]=TERMINATED;
+
+
+//shell should be set ready to run when the next user logs in
+//obtain the entry point IP value from the header of the shell program and place it in the beginning of the stack of the shell(current process)
+//reset the USERSP field of the shell to starting of user stack
+[[ptbr+16]*512]=[[ptbr+8]*512+1];
+[PROCESS_TABLE+currPID*16+13]=8*512;
+
+
+//waking up the Login process by changing STATE in it's process table entry to READY
+//idle and init/Login will be the only processes running after the execution of Logout
+[PROCESS_TABLE+16+4]=READY;
+
+
+//in system status table, reset the CURRENT_USER_ID field back to 0
+[SYSTEM_STATUS_TABLE]=0;
+
+
+//invoking the scheduler
+multipush(R1,R2,R3);
+call SCHEDULER;
+multipop(R1,R2,R3);
+
+
+[PROCESS_TABLE+currPID*16+9]=0;
+		
+SP=usersp;
+ireturn;
