@@ -1,0 +1,77 @@
+int main()
+{
+	decl
+		int temp,ri1,ri2,a;
+		string name1,name2,word;
+	enddecl
+	
+	begin
+		temp=exposcall("Write",-2,"File 1 : ");
+		temp=exposcall("Read",-1,name1);
+		
+		temp=exposcall("Write",-2,"File 2 : ");
+		temp=exposcall("Read",-1,name2);
+		
+		
+		a=exposcall("Create",name2,1);
+		
+		if(a==-1)
+		then
+			temp=exposcall("Write",-2,"No free inode table entry");
+		endif;
+		
+		
+		ri1=exposcall("Open",name1);
+		ri2=exposcall("Open",name2);
+		
+		if(ri1==-1)
+		then
+			temp=exposcall("Write",-2,"File Not found or file is not data file or root file");
+		endif;
+		
+		if(ri2==-1)
+		then
+			temp=exposcall("Write",-2,"File Not found or file is not data file or root file");
+		endif;
+		
+		if(ri1==-2)
+		then
+			temp=exposcall("Write",-2,"System has reached its limit of open files");
+		endif;
+		
+		if(ri2==-2)
+		then
+			temp=exposcall("Write",-2,"System has reached its limit of open files");
+		endif;
+		
+		if(ri1==-3)
+		then
+			temp=exposcall("Write",-2,"Process has reached its limit of resources");	
+		endif;
+		
+		if(ri2==-3)
+		then
+			temp=exposcall("Write",-2,"Process has reached its limit of resources");	
+		endif;
+		
+		
+		while(1==1)
+		do
+			temp=exposcall("Read",ri1,word);
+			
+			if(temp==-2)
+			then
+				temp=exposcall("Write",-2,"End Of File");
+				break;
+			endif;
+				
+			temp=exposcall("Write",ri2,word);
+		endwhile;
+			
+				
+		temp=exposcall("Close",ri1);
+		temp=exposcall("Close",ri2);
+		
+		return 0;
+	end
+}

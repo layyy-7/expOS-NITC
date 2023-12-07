@@ -1,0 +1,54 @@
+int main()
+{
+	decl
+		int temp,resourceindex;
+		string username,owner,filename;
+	enddecl
+	
+	begin
+		temp=exposcall("Write",-2,"Username : ");
+		temp=exposcall("Read",-1,username);
+		
+		resourceindex=exposcall("Open","root");
+		
+		
+		while(1==1)
+		do	
+			temp=exposcall("Read",resourceindex,filename);
+			
+			if(temp==-2)
+			then
+				break;
+			endif;
+			
+			
+			if(filename!="0" AND filename!="-1")
+			then
+				temp=exposcall("Seek",resourceindex,2);
+				temp=exposcall("Read",resourceindex,owner);
+				
+				
+				if(owner==username)
+				then
+					temp=exposcall("Delete",filename);
+				endif;
+				
+				
+				temp=exposcall("Seek",resourceindex,-3);
+			endif;			
+			
+			
+			temp=exposcall("Seek",resourceindex,7);		
+			
+			if(temp==-2)
+			then
+				break;
+			endif;				
+		endwhile;
+		
+		
+		temp=exposcall("Close",resourceindex);
+				
+		return 0;
+	end
+}

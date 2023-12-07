@@ -1,0 +1,52 @@
+int main()
+{
+	decl
+		int temp,resourceindex;
+		string name,word;
+	enddecl
+	
+	begin
+		temp=exposcall("Write",-2,"File Name : ");
+		temp=exposcall("Read",-1,name);
+		
+		resourceindex=exposcall("Open",name);
+		
+		
+		if(resourceindex==-1)
+		then
+			temp=exposcall("Write",-2,"File Not found or file is not data file or root file");
+		endif;
+		
+		if(resourceindex==-2)
+		then
+			temp=exposcall("Write",-2,"System has reached its limit of open files");
+		endif;
+		
+		if(resourceindex==-3)
+		then
+			temp=exposcall("Write",-2,"Process has reached its limit of resources");	
+		endif;
+		
+		
+		if(resourceindex>=0)
+		then		
+			while(1==1)
+			do
+				temp=exposcall("Read",resourceindex,word);
+			
+				if(temp==-2)
+				then
+					temp=exposcall("Write",-2,"End Of File");
+					break;
+				endif;
+			
+				temp=exposcall("Write",-2,word);
+			endwhile;
+		endif;		
+		
+		
+		temp=exposcall("Close",resourceindex);
+		
+		return 0;
+	end
+}
