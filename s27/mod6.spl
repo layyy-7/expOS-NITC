@@ -1,0 +1,273 @@
+alias funcnum R1;
+alias currPID R2;
+
+
+//swap out function
+if(funcnum==1)
+then
+	//Choose a process to swap out
+	//other than the IDLE, INIT or Shell
+	
+	alias index R3;
+	index=3;
+	
+	//finding a non-swapped process that is in the WAIT_PROCESS state
+	while(index<16)
+	do
+		if([PROCESS_TABLE+index*16+4]==WAIT_PROCESS && [PROCESS_TABLE+index*16+6]==0)
+		then
+			goto below;
+		endif;
+		
+		index=index+1;
+	endwhile;
+	
+	
+	//finding a non-swapped process that is in the WAIT_SEMAPHORE state
+	index=3;
+	
+	while(index<16)
+	do
+		if([PROCESS_TABLE+index*16+4]==WAIT_SEMAPHORE && [PROCESS_TABLE+index*16+6]==0)
+		then
+			goto below;
+		endif;
+		
+		index=index+1;
+	endwhile;
+
+	
+	alias maxtick R4;
+	maxtick=0;
+	
+	alias count R5;
+	count=3;
+	
+	
+	//if there are no non-swapped processes in the WAIT_PROCESS and WAIT_SEMAPHORE state, 
+        //find process with the highest TICK which is not running, terminated, allocated or swapped
+	index=0;
+		
+	while(count<16)
+	do
+		if([PROCESS_TABLE+count*16+4]!=RUNNING && [PROCESS_TABLE+count*16+4]!=TERMINATED && [PROCESS_TABLE+count*16+4]!=ALLOCATED && [PROCESS_TABLE+count*16+6]==0 && [PROCESS_TABLE+count*16]>=maxtick)
+		then
+			index=count;
+			maxtick=[PROCESS_TABLE+count*16];
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//If no such process exists
+	if(index==0)
+	then
+		[SYSTEM_STATUS_TABLE+5]=0;
+		return;
+	endif;
+	
+	
+	//label for above goto statements 
+	below:
+	
+	//when the process goes to swap, TICK starts again 
+	[PROCESS_TABLE+index*16]=0;
+	
+	
+	alias ptbr R4;
+	ptbr=[PROCESS_TABLE+index*16+14];
+	
+	
+	//for all heap,stack and code pages
+	count=2;
+	
+	while(count<10)
+	do
+		//if page is valid
+		if([ptbr+count*2]!=-1)
+		then
+			//if page is an unshared heap page or an user stack page
+			if((count>=2 && count<=3 && [MEMORY_FREE_LIST+[ptbr+count*2]]==1) || (count>=8 && count<=9))
+			then
+				//getting a free swap block by calling the get swap block
+				multipush(R1,R2,R3,R4,R5);
+			
+				R1=6;			
+				call MEMORY_MANAGER;
+			
+				alias blocknum R6;
+				blocknum=R0;
+			
+				multipop(R1,R2,R3,R4,R5);
+			
+			
+				//storing the disk block number in the Disk Map Table entry of the process
+				[DISK_MAP_TABLE+index*10+count]=blocknum;
+			
+			
+				//using the disk store function in the Device Manager module to write the heap page to the block found
+				multipush(R1,R2,R3,R4,R5,R6);
+			
+				R1=1;
+				R2=currPID;
+				R3=[ptbr+count*2];
+				R4=blocknum;
+				
+				call DEVICE_MANAGER;
+			
+				multipop(R1,R2,R3,R4,R5,R6);
+			endif;
+
+			
+			//shared heap pages should not be released
+			if(count>=4 || (count>=2 && count<=3 && [MEMORY_FREE_LIST+[ptbr+count*2]]==1))
+			then
+				//calling the release page function in the Memory Manager module to deallocate the page
+				multipush(R1,R2,R3,R4,R5);
+			
+				R1=2;
+				R2=[ptbr+count*2];
+			
+				call MEMORY_MANAGER;
+			
+				multipop(R1,R2,R3,R4,R5);
+			
+			
+				[ptbr+count*2]=-1;
+				[ptbr+count*2+1]="0000";
+			endif;
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//setting the SWAP_FLAG field in the process table entry to 1
+	[PROCESS_TABLE+index*16+6]=1;
+	
+	//incrementing the SWAP_COUNT and resetting the PAGING_STATUS back to 0
+	[SYSTEM_STATUS_TABLE+4]=[SYSTEM_STATUS_TABLE+4]+1;
+	[SYSTEM_STATUS_TABLE+5]=0;
+	
+	
+	//the scheduler can now resume normal scheduling
+	return;
+endif;
+
+
+//swap in function
+if(funcnum==2)
+then
+	alias count R3;
+	count=3;
+	
+	alias index R4;
+	index=0;
+	
+	alias maxtick R5;
+	maxtick=0;
+	
+	
+	//finding if any swapped out process can be made ready to run if brought into memory
+	//looping through the Process Table and finding the swapped process in the READY state with the highest TICK
+	while(count<16)
+	do
+		if([PROCESS_TABLE+count*16+4]==READY && [PROCESS_TABLE+count*16+6]==1 && [PROCESS_TABLE+count*16]>=maxtick)
+		then
+			index=count;
+			maxtick=[PROCESS_TABLE+count*16];
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//if no such process exists
+	if(index==0)
+	then
+		[SYSTEM_STATUS_TABLE+5]=0;
+		return;	
+	endif;
+	
+	
+	//setting the TICK field of the process table entry of the selected process to 0
+	[PROCESS_TABLE+index*16]=0;
+	
+	
+	//for unshared heap pages and user stack pages
+	count=2;
+	
+	while(count<10)
+	do
+		//for each swapped out heap or user stack page
+		if((count==2 || count==3 || count==8 || count==9) && [DISK_MAP_TABLE+index*10+count]!=-1)
+		then
+			//calling the get free page function in the Memory Manager module to allocate a memory page
+			multipush(R1,R2,R3,R4,R5);
+			
+			R1=1;
+			call MEMORY_MANAGER;
+			
+			alias pagenum R6;
+			pagenum=R0;
+			
+			multipop(R1,R2,R3,R4,R5);
+			
+			
+			alias blocknum R7;
+			blocknum=[DISK_MAP_TABLE+index*10+count];
+			
+			
+			//using the disk load function in the Device Manager module to copy the page found above to the memory			
+			multipush(R1,R2,R3,R4,R5,R6,R7);
+			
+			R1=2;
+			R2=currPID;
+			R3=pagenum;
+			R4=blocknum;
+			
+			call DEVICE_MANAGER;
+			
+			multipop(R1,R2,R3,R4,R5,R6,R7);
+			
+			
+			//freeing the swap block by calling the release block function
+			multipush(R1,R2,R3,R4,R5,R6,R7);
+			
+			R1=4;
+			R3=currPID;
+			R2=blocknum;
+			
+			call MEMORY_MANAGER;
+			
+			multipop(R1,R2,R3,R4,R5,R6,R7);
+			
+			
+			alias ptbr R8;
+			ptbr=[PROCESS_TABLE+index*16+14];
+			
+			
+			[ptbr+count*2]=pagenum;
+			[ptbr+count*2+1]="0110";
+			
+			
+			//invalidating the disk map table entry
+			[DISK_MAP_TABLE+index*10+count]=-1;
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//setting the SWAP_FLAG field in the process table entry to 0
+	[PROCESS_TABLE+index*16+6]=0;
+	
+	//decrementing the SWAP_COUNT and resetting the PAGING_STATUS back to 0
+	[SYSTEM_STATUS_TABLE+4]=[SYSTEM_STATUS_TABLE+4]-1;
+	[SYSTEM_STATUS_TABLE+5]=0;
+	
+	
+	//the scheduler can now resume normal scheduling
+	return;
+endif;

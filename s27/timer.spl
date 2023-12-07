@@ -1,0 +1,138 @@
+//switching the stack to kernel stack and saving the register content
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13]=SP;
+SP=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+11]*512-1;
+
+
+//backing up the register context of the current process
+backup;
+
+
+alias currPID R1;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+alias pagingstatus R2;
+pagingstatus=[SYSTEM_STATUS_TABLE+5];
+
+
+//if swapping is initiated
+if(pagingstatus!=0)
+then
+	//if the current process is the Swapper Daemon and Paging Status is SWAP_OUT
+	if(currPID==15 && pagingstatus==SWAP_OUT)
+	then
+		//invoking swap out
+		multipush(R1,R2);
+		
+		R1=1;
+		R2=[SYSTEM_STATUS_TABLE+1];
+		
+		call PAGER_MODULE;
+		
+		multipop(R1,R2);
+	endif;
+	
+	
+	//if the current process is the Swapper Daemon and Paging Status is SWAP_IN
+	if(currPID==15 && pagingstatus==SWAP_IN)
+	then
+		//invoking swap in
+		multipush(R1,R2);
+		
+		R1=2;
+		R2=[SYSTEM_STATUS_TABLE+1];
+		
+		call PAGER_MODULE;
+		
+		multipop(R1,R2);
+	endif;
+	
+	
+	//if the current process is Idle
+	if(currPID==0)
+	then
+		//swapping is ongoing, but the daemon is blocked for some disk operation and idle is being run now
+        	//skip to the end to perform context switch
+		goto context_switch;
+	endif;
+endif;
+	
+	
+//swapping is not on now
+//checking whether it must be initiated
+if(pagingstatus==0)
+then
+	//swap out to be invoked during next Timer Interrupt
+        //setting the Paging Status in System Status Table to SWAP_OUT
+	if([SYSTEM_STATUS_TABLE+2]<MEM_LOW)
+	then
+		[SYSTEM_STATUS_TABLE+5]=SWAP_OUT;
+	endif;
+	
+	
+	//if there are enough memory pages and there are swapped out processes
+	if([SYSTEM_STATUS_TABLE+2]>=MEM_LOW && [SYSTEM_STATUS_TABLE+4]>0)
+	then
+		//swap in to be invoked during next Timer Interrupt
+            	//setting the Paging Status in System Status Table to SWAP_IN
+		if([SYSTEM_STATUS_TABLE+2]>MEM_HIGH)
+		then
+			[SYSTEM_STATUS_TABLE+5]=SWAP_IN;
+		endif;
+			
+			
+		alias count R3;
+		count=3;
+			
+		while(count<16)
+		do
+			//swap in to be invoked during next Timer Interrupt
+            		//setting the Paging Status in System Status Table to SWAP_IN
+			if([PROCESS_TABLE+count*16+6]==1 && [PROCESS_TABLE+count*16]>MAX_TICK)
+			then
+				[SYSTEM_STATUS_TABLE+5]=SWAP_IN;
+			endif;
+					
+			count=count+1;
+		endwhile;
+	endif;		
+endif;
+
+
+//return label for idle process
+context_switch:
+
+
+//changing the state for current user process
+[PROCESS_TABLE+currPID*16+4]=READY;
+
+
+alias count R3;
+count=0;
+
+//incrementing the TICK field of each process
+while(count<16)
+do
+	if([PROCESS_TABLE+count*16+4]!=TERMINATED)
+	then
+		[PROCESS_TABLE+count*16]=[PROCESS_TABLE+count*16]+1;
+	endif;
+	
+	count=count+1;
+endwhile;
+
+
+//invoking context switch module
+multipush(R1,R2,R3);
+call SCHEDULER;
+multipop(R1,R2,R3);
+
+
+//restoring the content of registers
+restore;
+
+
+//restoring the user SP saved in the process table entry of new process
+SP=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13];
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+9]=0;
+
+ireturn;

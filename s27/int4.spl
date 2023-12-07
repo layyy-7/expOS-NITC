@@ -1,0 +1,260 @@
+alias usersp R1;
+usersp=SP;
+
+alias currPID R2;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+alias ptbr R3;
+ptbr=[PROCESS_TABLE+currPID*16+14];
+
+
+//changing the SP from pointing to user stack to pointing to kernel stack
+[PROCESS_TABLE+currPID*16+13]=SP;
+SP=[PROCESS_TABLE+currPID*16+11]*512-1;
+
+
+//extracting the system call number
+alias syscall R4;
+syscall=[([ptbr+2*((usersp-5)/512)]*512)+((usersp-5)%512)];
+
+//setting mode flag to the extracted system call number
+[PROCESS_TABLE+currPID*16+9]=syscall;
+
+
+//extracting the filename
+alias filename R5;
+filename=[([ptbr+2*((usersp-4)/512)]*512)+((usersp-4)%512)];
+
+
+//to store the return value for returnlabel
+alias returnval R15;
+
+
+//create system call
+if(syscall==1)
+then	
+	//extracting the permission
+	alias permission R6;
+	permission=[([ptbr+2*((usersp-3)/512)]*512)+((usersp-3)%512)];
+	
+	
+	//checking if the file is already present or not
+	alias inodeindex R7;
+	inodeindex=0;
+	
+	while(inodeindex<MAX_FILE_NUM)
+	do
+		//if the file is present in the system
+		if([INODE_TABLE+inodeindex*16+1]==filename)
+		then
+			returnval=0;
+			goto returnlabel;
+		endif;
+		
+		inodeindex=inodeindex+1;
+	endwhile;
+	
+	
+	//finding free entry in the inode table
+	inodeindex=0;
+	
+	while(inodeindex<MAX_FILE_NUM)
+	do
+		//an unused entry is indicated by -1 in the FILE NAME field
+		if([INODE_TABLE+inodeindex*16+1]==-1)
+		then
+			break;
+		endif;
+		
+		inodeindex=inodeindex+1;	
+	endwhile;
+	
+	
+	//if no free entry found(maximum number of files reached)
+	if(inodeindex==MAX_FILE_NUM)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	//setting up the inode table entry
+	[INODE_TABLE+inodeindex*16]=DATA;
+	[INODE_TABLE+inodeindex*16+1]=filename;
+	[INODE_TABLE+inodeindex*16+2]=0;
+	
+	[INODE_TABLE+inodeindex*16+4]=[PROCESS_TABLE+currPID*16+3];
+	[INODE_TABLE+inodeindex*16+5]=permission;
+	
+	[INODE_TABLE+inodeindex*16+8]=-1;
+	[INODE_TABLE+inodeindex*16+9]=-1;
+	[INODE_TABLE+inodeindex*16+10]=-1;
+	[INODE_TABLE+inodeindex*16+11]=-1;
+	
+	
+	//finding the username from user table
+	alias username R8;
+	username=[USER_TABLE+[PROCESS_TABLE+currPID*16+3]*2];
+
+	
+	//setting up the root entry corresponding to given inodeindex
+	[ROOT_FILE+inodeindex*8]=filename;
+	[ROOT_FILE+inodeindex*8+1]=0;
+	[ROOT_FILE+inodeindex*8+2]=DATA;
+	[ROOT_FILE+inodeindex*8+3]=username;
+	[ROOT_FILE+inodeindex*8+4]=permission;
+			
+
+	returnval=0;
+	goto returnlabel;
+endif;
+
+
+//delete system call
+if(syscall==4)
+then
+	//finding the file in the inode table
+	alias inodeindex R6;
+	inodeindex=0;
+	
+	while(inodeindex<MAX_FILE_NUM)
+	do
+		if([INODE_TABLE+inodeindex*16+1]==filename)
+		then
+			break;
+		endif;
+		
+		inodeindex=inodeindex+1;
+	endwhile;
+	
+	
+	//if file is not present
+	if(inodeindex==MAX_FILE_NUM)
+	then
+		returnval=0;
+		goto returnlabel;
+	endif;
+	
+	
+	//if file type is not data
+	if([INODE_TABLE+inodeindex*16]!=DATA)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	//is file permission is exclusive
+	if([INODE_TABLE+inodeindex*16+4]==0)
+	then
+		//current user is not root and the current user does not own the file
+		if([PROCESS_TABLE+currPID*16+3]!=1 && [PROCESS_TABLE+currPID*16+3]!=[INODE_TABLE+inodeindex*16+3])
+		then
+			returnval=-1;
+			goto returnlabel;
+		endif;
+	endif;
+	
+	
+	//acquire a lock on the file by calling the acquire inode
+	multipush(R1,R2,R3,R4,R5,R6);
+	
+	R1=4;
+	R3=currPID;
+	R2=inodeindex;
+	
+	call MOD_0;
+	
+	multipop(R1,R2,R3,R4,R5,R6);
+	
+	
+	//file is open, cannot be deleted
+	if([FILE_STATUS_TABLE+inodeindex*4+1]!=-1)
+	then
+		//release the lock on the file by calling the release inode
+		multipush(R1,R2,R3,R4,R5,R6);
+	
+		R1=5;
+		R3=currPID;
+		R2=inodeindex;
+	
+		call MOD_0;
+	
+		multipop(R1,R2,R3,R4,R5,R6);
+		
+		
+		returnval=-2;
+		goto returnlabel;
+	endif;
+	
+	
+	alias block R7;
+	block=8;
+	
+	while(block<12)
+	do
+		//for each disk block allocated to the file
+		if([INODE_TABLE+inodeindex*16+block]!=-1)
+		then
+			alias count R8;
+			count=0;
+			
+			while(count<MAX_BUFFER)
+			do
+				//if the disk block is loaded into a buffer, and the DIRTY BIT is set
+				if([BUFFER_TABLE+count*4]==[INODE_TABLE+inodeindex*16+block] && [BUFFER_TABLE+count*4+1]==1)
+				then
+					[BUFFER_TABLE+count*4+1]=0;
+				endif;
+				
+				count=count+1;	
+			endwhile;
+			
+			
+			//calling the release block	
+			multipush(R1,R2,R3,R4,R5,R6,R7);
+			
+			R1=4;
+			R3=currPID;
+			R2=[INODE_TABLE+inodeindex*16+block];		
+			
+			call MEMORY_MANAGER;
+			
+			multipop(R1,R2,R3,R4,R5,R6,R7);		
+		endif;
+		
+		block=block+1;	
+	endwhile;
+	
+	
+	//invalidating the Inode Table of the file
+	[INODE_TABLE+inodeindex*16+1]=-1;
+
+	//updating the Root file by invalidating the entry for the file
+	[ROOT_FILE+inodeindex*8]=-1;
+	
+	
+	//release the lock on the file by calling the release inode
+	multipush(R1,R2,R3,R4,R5,R6);
+	
+	R1=5;
+	R3=currPID;
+	R2=inodeindex;
+	
+	call MOD_0;
+	
+	multipop(R1,R2,R3,R4,R5,R6);
+
+
+	returnval=0;
+	goto returnlabel;
+endif;
+
+
+//as this is repeated multiple times,we use this syntax to save space
+returnlabel:
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=returnval;
+		
+	SP=usersp;
+	ireturn;

@@ -1,0 +1,203 @@
+//setting the MODE value in the process table
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+9]=7;
+
+
+alias usersp R1;
+usersp=SP;
+
+alias currPID R2;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+alias ptbr R3;
+ptbr=[PROCESS_TABLE+currPID*16+14];
+
+alias resourcetable R4;
+resourcetable=[PROCESS_TABLE+16*currPID+11]*512+RESOURCE_TABLE_OFFSET;
+
+
+//changing the SP from pointing to user stack to pointing to kernel stack
+[PROCESS_TABLE+currPID*16+13]=SP;
+SP=[PROCESS_TABLE+currPID*16+11]*512-1;
+
+
+//extracting the index of Per-Process Resource Table entry
+alias resourceindex R5;
+resourceindex=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+
+//extracting the word
+alias word R6;
+word=[[ptbr+2*((usersp-3)/512)]*512+(usersp-3)%512];
+
+
+//to store the return value for returnlabel
+alias returnval R15;
+
+
+//if input is to be read from terminal  
+if(resourceindex==-1)
+then
+	//invoking the terminal read function
+	multipush(R1,R2,R3,R4,R5,R6);
+	
+	R1=4;
+	R2=currPID;
+	R3=word;
+	
+	call DEVICE_MANAGER;
+	
+	multipop(R1,R2,R3,R4,R5,R6);
+	
+	
+	returnval=0;	
+	goto returnlabel;
+endif;
+
+
+//if index is invalid
+if(resourceindex<0 || resourceindex>7)
+then
+	returnval=-1;
+	goto returnlabel;
+endif;
+
+
+//if the Per-Process Resource Table entry of index is invalid or not a file
+if([resourcetable+2*resourceindex]==-1 || [resourcetable+2*resourceindex]!=FILE)
+then
+	returnval=-1;
+	goto returnlabel;
+endif;
+
+
+alias openindex R7;
+openindex=[resourcetable+resourceindex*2+1];
+
+alias inodeindex R8;
+inodeindex=[OPEN_FILE_TABLE+openindex*4];
+
+
+//acquiring the Lock on the File by calling the acquire inode function
+multipush(R1,R2,R3,R4,R5,R6,R7,R8);
+
+R1=4;
+R3=currPID;
+R2=inodeindex;
+
+call MOD_0;
+
+multipop(R1,R2,R3,R4,R5,R6,R7,R8);
+
+
+//if acquire inode fails
+if(R0==-1)
+then
+	returnval=-1;
+	goto returnlabel;
+endif;
+
+
+alias lseek R9;
+lseek=[OPEN_FILE_TABLE+openindex*4+2];
+
+
+//if the File corresponds to Root file
+if(inodeindex==INODE_ROOT)
+then
+	//if the lseek value is equal to the root file size(480)
+	if(lseek>=480)
+	then
+		//invoking release inode
+		multipush(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+
+		R1=5;
+		R3=currPID;
+		R2=inodeindex;
+	
+		call MOD_0;
+
+		multipop(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+		
+		
+		returnval=-2;
+		goto returnlabel;		
+	endif;
+
+	
+	alias phyaddress R10;
+	phyaddress=[ptbr+2*(word/512)]*512+(word%512);
+
+	
+	//reading from the word at lseek position in memory copy of root file to the translated memory address
+	[phyaddress]=[ROOT_FILE+lseek];
+	
+	//incrementing the lseek position in the Open File Table
+	[OPEN_FILE_TABLE+openindex*4+2]=[OPEN_FILE_TABLE+openindex*4+2]+1;	
+else
+	//end of file reached
+	if(lseek>=[INODE_TABLE+inodeindex*16+2])
+	then
+		//invoking release inode
+		multipush(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+
+		R1=5;
+		R3=currPID;
+		R2=inodeindex;
+	
+		call MOD_0;
+
+		multipop(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+		
+		
+		returnval=-2;
+		goto returnlabel;
+	endif;
+	
+	
+	alias diskblocknum R10;
+	diskblocknum=[INODE_TABLE+inodeindex*16+8+(lseek/512)];
+	
+	alias diskblockoffset R11;
+	diskblockoffset=lseek%512;
+	
+	
+	//reading the data from the File Buffer by calling the buffered read function
+	multipush(R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11);
+	
+	R1=2;
+	R2=diskblocknum;
+	R3=diskblockoffset;
+	R4=word;
+	
+	call FILE_MANAGER;
+	
+	multipop(R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11);
+	
+	
+	//incrementing the lseek position in the Open File Table
+	[OPEN_FILE_TABLE+openindex*4+2]=[OPEN_FILE_TABLE+openindex*4+2]+1;	
+endif;
+
+
+//invoking release inode
+multipush(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+
+R1=5;
+R3=currPID;
+R2=inodeindex;
+	
+call MOD_0;
+
+multipop(R1,R2,R3,R4,R5,R6,R7,R8,R9);
+		
+		
+returnval=0;
+goto returnlabel;
+
+
+//as this is repeated multiple times,we use this syntax to save space
+returnlabel:
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=returnval;
+		
+	SP=usersp;
+	ireturn;

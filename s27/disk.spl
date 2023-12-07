@@ -1,0 +1,43 @@
+//There is no Release Disk function to release the disk 
+//instead the disk interrupt handler completes the task of the Release Disk function
+
+
+//breakpoint;
+
+//Saving the value of user stack into process table
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13]=SP;
+
+//Initializing SP to the top of kernal stack
+SP=[(PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16)+11]*512-1;
+
+//Backing up the user context of the currently running process
+backup;
+
+//setting disk status as 0(disk is free)
+[DISK_STATUS_TABLE]=0;
+
+
+//changing state of all processes which have state as wait_disk to ready
+alias count R1;
+count=1;
+
+while(count<16)
+do
+	if([PROCESS_TABLE+count*16+4]==WAIT_DISK)
+	then
+		[PROCESS_TABLE+count*16+4]=READY;
+	endif;
+	
+	count=count+1;
+endwhile;
+
+
+//restoring register context
+restore;
+
+//changing SP back to top of user stack
+SP=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13];
+
+
+//breakpoint;
+ireturn;

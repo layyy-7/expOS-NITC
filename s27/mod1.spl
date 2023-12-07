@@ -1,0 +1,323 @@
+alias funcnum R1;
+
+
+//Get Pcb Entry function
+if(funcnum==1)
+then
+	alias count R2;
+	count=0;
+	
+	while(count<16)
+	do
+		if([PROCESS_TABLE+count*16+4]==TERMINATED)
+		then
+			[PROCESS_TABLE+count*16+1]=count;
+			[PROCESS_TABLE+count*16+4]=ALLOCATED;
+			[PROCESS_TABLE+count*16+14]=PAGE_TABLE_BASE+count*20;
+			[PROCESS_TABLE+count*16+15]=10;
+	
+			
+			//returning PID of free process table entry		
+			R0=count;
+			return;	
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//if no process table entry is free
+	R0=-1;
+	return;
+endif;
+
+
+//Free User Area Page function
+if(funcnum==2)
+then
+	//function arguments which are not common to all functions
+	alias currPID R2;
+	
+	
+	alias userareapagenum R3;
+	userareapagenum=[PROCESS_TABLE+currPID*16+11];
+
+	alias resourcetable R4;
+	resourcetable=userareapagenum*512+RESOURCE_TABLE_OFFSET;
+	
+	
+	alias resourceindex R5;
+	resourceindex=0;
+	
+	//when a process terminates, 
+	//all the semaphores the process has acquired (and haven't released explicitly) have to be released
+	//all the files the process has opened (and haven't closed explicitly) have to be closed
+	while(resourceindex<8)
+	do
+		if([resourcetable+resourceindex*2]==SEMAPHORE)
+		then
+			//invoking release semaphore function
+			multipush(R1,R2,R3,R4,R5);
+			
+			//maintaining this order is very important,
+			//as R2 stores currPID and cannot be altered before it is assigned to R3
+			R1=7;
+			R3=currPID;
+			R2=[resourcetable+resourceindex*2+1];
+			
+			call RESOURCE_MANAGER;
+						
+			multipop(R1,R2,R3,R4,R5);
+		endif;
+		
+		
+		if([resourcetable+resourceindex*2]==FILE)
+		then
+			//invoking close function
+			multipush(R1,R2,R3,R4,R5);
+			
+			R1=4;
+			R2=[resourcetable+resourceindex*2+1];
+			
+			call FILE_MANAGER;
+						
+			multipop(R1,R2,R3,R4,R5);
+		endif;
+		
+		
+		resourceindex=resourceindex+1;
+	endwhile;
+	
+	
+	//calling the release page function
+	multipush(R1,R2,R3);
+	
+	R1=2;
+	R2=userareapagenum;
+	
+	call MEMORY_MANAGER;
+	
+	multipop(R1,R2,R3);
+	
+	
+	return;
+endif;
+
+
+//Exit Process function
+if(funcnum==3)
+then
+	//function arguments which are not common to all functions
+	alias currPID R2;
+	
+	//calling the free page table function
+	multipush(R1,R2);
+	
+	R1=4;
+	R2=currPID;
+	
+	call PROCESS_MANAGER;
+	
+	multipop(R1,R2);
+
+
+	//calling the free user area page function
+	multipush(R1,R2);
+	
+	R1=2;
+	R2=currPID;
+	
+	call PROCESS_MANAGER;
+	
+	multipop(R1,R2);
+
+	
+	//when the Exit Process function is invoked from Exec system call, 
+	//the process is actually not terminating as the new program is being overlayed in the same address space and is executed with the same PID	
+	//hence when the Exit Process function is invoked from Exec system call, 
+	//it should not wake up the processes waiting for the current process and also should not set the children as orphan processes
+	if([PROCESS_TABLE+currPID*16+9]!=9)
+	then
+		alias count R3;
+		count=0;
+		
+		while(count<16)
+		do
+			//change the state to READY for the processes whose state is tuple (WAIT_PROCESS, current PID)
+			if([PROCESS_TABLE+count*16+4]==WAIT_PROCESS && [PROCESS_TABLE+count*16+5]==currPID)
+			then
+				[PROCESS_TABLE+count*16+4]=READY;
+			endif;
+			
+			//if the PPID of a process is PID of current process, then invalidate PPID field to -1
+			if([PROCESS_TABLE+count*16+2]==currPID)
+			then
+				[PROCESS_TABLE+count*16+2]=-1;
+			endif;
+			
+			count=count+1;
+		endwhile;
+	endif;
+	
+	
+	//setting the state of current process as terminated	
+	[PROCESS_TABLE+currPID*16+4]=TERMINATED;
+	
+	return;
+endif;
+
+
+//Free Page Table function
+if(funcnum==4)
+then
+	//function arguments which are not common to all functions
+	alias currPID R2;
+	
+	alias ptbr R3;
+	ptbr=[PROCESS_TABLE+currPID*16+14];
+	
+	alias ptlr R4;
+	ptlr=[PROCESS_TABLE+currPID*16+15];
+	
+	//invalidate the page table entries for library pages
+	[ptbr+0]=-1;
+	[ptbr+1]="0000";
+	[ptbr+2]=-1;
+	[ptbr+3]="0000";
+	
+	
+	alias count R5;
+	count=2;
+	
+	while(count<ptlr)
+	do
+		if([ptbr+count*2]!=-1)
+		then
+			//calling the release page function
+			multipush(R1,R2,R3,R4,R5);
+	
+			R1=2;
+			R2=[ptbr+count*2];
+	
+			call MEMORY_MANAGER;
+	
+			multipop(R1,R2,R3,R4,R5);	
+			
+			
+			[ptbr+count*2]=-1;
+			[ptbr+count*2+1]="0000";
+		endif;
+		
+		count=count+1;	
+	endwhile;
+	
+	
+	//go through the heap and stack entries in the disk map table of the process with given PID 
+	//if any valid entries are found, invoke the Release Block function
+	count=2;
+	
+	while(count<10)
+	do
+		if((count==2 || count==3 || count==8 || count==9) && ([DISK_MAP_TABLE+currPID*10+count]!=-1))
+		then
+			//calling the release block function
+			multipush(R1,R2,R3,R4,R5);
+				
+			R1=4;
+			R2=[DISK_MAP_TABLE+currPID*10+count];
+			R3=currPID;
+				
+			call MEMORY_MANAGER;
+				
+			multipop(R1,R2,R3,R4,R5);
+		endif;		
+				
+		[DISK_MAP_TABLE+currPID*10+count]=-1;
+		count=count+1;
+	endwhile;
+	
+	
+	return;
+endif;
+
+
+//Kill All function
+if(funcnum==5)
+then
+	//function arguments which are not common to all functions
+	alias currPID R2;
+	
+	
+	alias count R4;
+	count=0;
+	
+	//locks all files to ensure that no processes are in the middle of a file operation
+	while(count<MAX_FILE_NUM)
+	do
+		//for each valid entry in the Inode table	
+		if([INODE_TABLE+count*16+1]!=-1)
+		then
+			//acquire lock on the file by calling the acquire inode
+			multipush(R1,R2,R4);
+			
+			R1=4;
+			R3=currPID;
+			R2=count;
+			
+			call RESOURCE_MANAGER;
+			
+			multipop(R1,R2,R4);
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+	
+	//kill All terminates all the processes (except IDLE, INIT and process with given PID) by invoking Exit Process
+	count=2;
+	
+	while(count<16)
+	do
+		if(count!=currPID && [PROCESS_TABLE+count*16+4]!=TERMINATED)
+		then
+			//invoking exit process
+			multipush(R1,R2,R4);
+			
+			R1=3;
+			R2=count;
+			
+			call PROCESS_MANAGER;
+			
+			multipop(R1,R2,R4);
+		endif;
+		
+		count=count+1;	
+	endwhile;
+	
+	
+	//all the acquired inodes are released by invoking Release Inode
+	count=0;
+	
+	while(count<MAX_FILE_NUM)
+	do
+		//for each valid entry in the Inode table	
+		if([INODE_TABLE+count*16+1]!=-1)
+		then
+			//release lock on the file by calling the release inode
+			multipush(R1,R2,R4);
+			
+			R1=5;
+			R3=currPID;
+			R2=count;
+			
+			call RESOURCE_MANAGER;
+			
+			multipop(R1,R2,R4);
+		endif;
+		
+		count=count+1;
+	endwhile;
+	
+		
+	return;
+endif;

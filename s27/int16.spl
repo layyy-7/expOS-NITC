@@ -1,0 +1,311 @@
+alias usersp R1;
+usersp=SP;
+
+alias currPID R2;
+currPID=[SYSTEM_STATUS_TABLE+1];
+
+alias ptbr R3;
+ptbr=[PROCESS_TABLE+currPID*16+14];
+
+	
+//changing the SP from pointing to user stack to pointing to kernel stack
+[PROCESS_TABLE+currPID*16+13]=SP;
+SP=[PROCESS_TABLE+currPID*16+11]*512-1;
+
+
+//extracting the system call number
+alias syscall R4;
+syscall=[([ptbr+2*((usersp-5)/512)]*512)+((usersp-5)%512)];
+
+//setting mode flag to the extracted system call number
+[PROCESS_TABLE+currPID*16+9]=syscall;
+
+
+//to store the return value for returnlabel
+alias returnval R15;
+
+
+//New User system call
+if(syscall==22)
+then
+	//extracting the username
+	alias username R5;
+	username=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+
+	//extracting the password
+	alias password R6;
+	password=[[ptbr+2*((usersp-3)/512)]*512+(usersp-3)%512];
+
+	
+	//newusr system call can only be invoked from the shell process of the root user
+	if([SYSTEM_STATUS_TABLE]!=1 || currPID!=2)
+	then
+		returnval=-2;
+		goto returnlabel;		
+	endif;
+	
+	
+	alias userid R7;
+	userid=0;
+	
+	//checking if an entry for the user already exists
+	while(userid<MAX_USER_NUM)
+	do
+		if(username==[USER_TABLE+userid*2])
+		then
+			returnval=-1;
+			goto returnlabel;
+		endif;
+		
+		userid=userid+1;
+	endwhile;
+	
+	
+	//finding a free entry in the User Table
+	userid=2;
+	
+	while(userid<MAX_USER_NUM)
+	do
+		if([USER_TABLE+userid*2]==-1)
+		then
+			break;
+		endif;
+		
+		userid=userid+1;
+	endwhile;
+	
+	
+	//if no free entry is found
+	if(userid==MAX_USER_NUM)
+	then
+		returnval=-3;
+		goto returnlabel;
+	endif;
+	
+	
+	//finding the encrypted password by applying the ENCRYPT instruction on the input password
+	encrypt password;
+	
+	
+	//setting the new entries
+	[USER_TABLE+userid*2]=username;
+	[USER_TABLE+userid*2+1]=password;
+	
+	
+	returnval=0;
+	goto returnlabel;
+endif;
+
+
+//Remove User system call
+if(syscall==23)
+then
+	//extracting the username
+	alias username R5;
+	username=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+
+	
+	//remusr system call can only be invoked from the shell process of the root user
+	if([SYSTEM_STATUS_TABLE]!=1 || currPID!=2)
+	then
+		returnval=-2;
+		goto returnlabel;		
+	endif;
+	
+	
+	if(username=="kernel" || username=="root")
+	then
+		returnval=-2;
+		goto returnlabel;
+	endif;
+	
+	
+	alias userid R6;
+	userid=2;
+	
+	//looping through the User Table and find the entry corresponding to the user
+	while(userid<MAX_USER_NUM)
+	do
+		if(username==[USER_TABLE+userid*2])
+		then
+			break;
+		endif;
+		
+		userid=userid+1;
+	endwhile;
+	
+	
+	//if the entry is not found
+	if(userid==MAX_USER_NUM)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	alias rootindex R7;
+	rootindex=0;
+	
+	//a user can not be removed from the system if the user is the owner of one or more files in the system
+	while(rootindex<MAX_FILE_NUM)
+	do
+		if(username==[ROOT_FILE+rootindex*8+3] && [ROOT_FILE+rootindex*8]!=-1)
+		then
+			returnval=-3;
+			goto returnlabel;
+		endif;
+		
+		rootindex=rootindex+1;
+	endwhile;
+	
+	
+	//invalidating the entries in user table
+	[USER_TABLE+userid*2]=-1;
+	[USER_TABLE+userid*2+1]=-1;
+	
+	
+	returnval=0;
+	goto returnlabel;
+endif;
+
+
+//Set Password system call
+if(syscall==24)
+then
+	//extracting the username
+	alias username R5;
+	username=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+
+	//extracting the password
+	alias password R6;
+	password=[[ptbr+2*((usersp-3)/512)]*512+(usersp-3)%512];
+	
+	
+	//setpwd can only be executed by shell process
+	if(currPID!=2)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	alias userid R7;
+	userid=1;
+	
+	//looping through the User Table and finding the entry corresponding to the user
+	while(userid<MAX_USER_NUM)
+	do
+		if(username==[USER_TABLE+userid*2])
+		then
+			break;
+		endif;
+		
+		userid=userid+1;
+	endwhile;
+	
+	
+	//if the entry is not found
+	if(userid==MAX_USER_NUM)
+	then
+		returnval=-2;
+		goto returnlabel;
+	endif;
+	
+	
+	//a user is permitted to change only its own password 
+	if(userid!=[PROCESS_TABLE+currPID*16+3])
+	then
+		//the privileged user root has permission to change the password of any user
+		if([SYSTEM_STATUS_TABLE]!=1)
+		then
+			returnval=-1;
+			goto returnlabel;
+		endif;
+	endif;
+	
+	
+	//finding the encrypted password by applying the ENCRYPT instruction on the input password
+	encrypt password;
+	
+	//setting the new password
+	[USER_TABLE+userid*2+1]=password;
+	
+	
+	returnval=0;
+	goto returnlabel;
+endif;
+
+
+//Get Username system call
+//can be executed from any process of any user
+if(syscall==25)
+then
+	//extracting the userid
+	alias userid R5;
+	userid=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+	
+	
+	//if userid is not in range
+	if(userid<0 || userid>15)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	//if the user table entry curresponding to the userid is invalid
+	if([USER_TABLE+userid*2]==-1)
+	then
+		returnval=-1;
+		goto returnlabel;
+	endif;
+	
+	
+	//fetching the user name from the User Table
+	alias username R6;
+	username=[USER_TABLE+userid*2];
+	
+	
+	returnval=username;
+	goto returnlabel;
+endif;
+
+
+//Get User ID system call
+//can be executed from any process of any user
+if(syscall==26)
+then
+	//extracting the username
+	alias username R5;
+	username=[[ptbr+2*((usersp-4)/512)]*512+(usersp-4)%512];
+	
+	
+	alias userid R6;
+	userid=0;
+	
+	//looping through the User Table and finding the entry corresponding to the user
+	while(userid<MAX_USER_NUM)
+	do
+		if(username==[USER_TABLE+userid*2])
+		then
+			returnval=userid;
+			goto returnlabel;
+		endif;
+		
+		userid=userid+1;
+	endwhile;
+	
+	
+	//invalid Username
+	returnval=-1;
+	goto returnlabel;
+endif;
+
+
+//as this is repeated multiple times,we use this syntax to save space
+returnlabel:
+	[PROCESS_TABLE+currPID*16+9]=0;
+	[([ptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=returnval;
+		
+	SP=usersp;
+	ireturn;

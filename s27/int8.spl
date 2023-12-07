@@ -1,0 +1,232 @@
+//setting the mode flag to 8,indicating fork
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+9]=8;
+
+alias usersp R1;
+usersp=SP;
+
+//Saving the value of user stack into process table
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13]=SP;
+
+//Initializing SP to the top of kernal stack
+SP=[(PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16)+11]*512-1;
+
+
+//invoking the Get Pcb Entry function 
+multipush(R1);
+
+R1=1;
+call PROCESS_MANAGER;
+
+alias childPID R2;
+childPID=R0;
+
+multipop(R1);
+
+
+alias parentptbr R3;
+parentptbr=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+14];
+
+
+//if a free process table is not available
+if(childPID==-1)
+then
+	//storing the return value
+	[[parentptbr+2*((usersp-1)/512)]*512+((usersp-1)%512)]=-1;
+	
+	
+	[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+9]=0;
+	SP=usersp;
+		
+	ireturn;
+endif;
+
+
+//if the heap pages are not allocated for the parent process
+if([parentptbr+4]==-1 || [parentptbr+6]==-1)
+then
+	//calling Get Free Page function for heap page 1
+	multipush(R1,R2,R3);
+	
+	R1=1;
+	call MEMORY_MANAGER;
+	
+	alias pagenum R4;
+	pagenum=R0;
+	
+	multipop(R1,R2,R3);
+	
+	[parentptbr+4]=pagenum;
+	[parentptbr+5]="1110";
+
+	
+	//calling Get Free Page function for heap page 2
+	multipush(R1,R2,R3);
+	
+	R1=1;
+	call MEMORY_MANAGER;
+	
+	pagenum=R0;
+	
+	multipop(R1,R2,R3);
+	
+	[parentptbr+6]=pagenum;
+	[parentptbr+7]="1110";
+endif;
+
+
+alias childptbr R4;
+childptbr=[PROCESS_TABLE+childPID*16+14];
+
+
+//calling Get Free Page function for stack page 1
+multipush(R1,R2,R3,R4);
+	
+R1=1;
+call MEMORY_MANAGER;
+	
+alias pagenum R5;	
+pagenum=R0;
+	
+multipop(R1,R2,R3,R4);
+	
+[childptbr+16]=pagenum;
+[childptbr+17]="1110";
+
+
+//calling Get Free Page function for stack page 2
+multipush(R1,R2,R3,R4);
+	
+R1=1;
+call MEMORY_MANAGER;
+	
+pagenum=R0;
+	
+multipop(R1,R2,R3,R4);
+	
+[childptbr+18]=pagenum;
+[childptbr+19]="1110";
+
+
+//calling Get Free Page function for user area page
+multipush(R1,R2,R3,R4);
+
+R1=1;
+call MEMORY_MANAGER;
+
+pagenum=R0;
+
+multipop(R1,R2,R3,R4);
+
+[PROCESS_TABLE+childPID*16+11]=pagenum;
+
+
+//updating the process table entries
+//INODE INDEX for the child and the parent processes will be same, as both of them run the same program
+//UPTR field should also be copied from the parent process, as content of the user stack is same for both of them
+//so when both of the processes resume execution in user mode, the value of SP must be the same
+[PROCESS_TABLE+childPID*16+3]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+3];
+[PROCESS_TABLE+childPID*16+6]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+6];
+[PROCESS_TABLE+childPID*16+7]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+7];
+[PROCESS_TABLE+childPID*16+10]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+10];
+[PROCESS_TABLE+childPID*16+13]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+13];
+
+
+//the TICK field keep track of how long a process has been running in memory and should be initialized to 0, when a process is created
+//MODE FLAG, KPTR are set to zero as the child process starts its execution from the user mode
+[PROCESS_TABLE+childPID*16]=0;
+[PROCESS_TABLE+childPID*16+9]=0;
+[PROCESS_TABLE+childPID*16+12]=0;
+
+
+//PID of the parent is stored in the PPID field of the process table of the child
+[PROCESS_TABLE+childPID*16+2]=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+1];
+[PROCESS_TABLE+childPID*16+4]=CREATED;
+
+
+alias parentrestable R5;
+parentrestable=[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+11]*512+RESOURCE_TABLE_OFFSET;
+
+alias childrestable R6;
+childrestable=[PROCESS_TABLE+childPID*16+11]*512+RESOURCE_TABLE_OFFSET;
+
+
+//child process shares the files and the semaphores opened by the parent process
+//hence we need to copy the entries of the per-process resource table of the parent to the child
+alias count R7;
+count=0;
+
+while(count<16)
+do
+	//for every semaphore acquired by the parent, increment Process Count in Semaphore Table
+	if(count%2==0 && [parentrestable+count]==SEMAPHORE)
+	then
+		[SEMAPHORE_TABLE+[parentrestable+count+1]*4+1]=[SEMAPHORE_TABLE+[parentrestable+count+1]*4+1]+1;
+	endif;
+	 
+	 
+	//for every file opened by the parent, increment the Open Instance Count in Open File Table 
+	if(count%2==0 && [parentrestable+count]==FILE)
+	then
+		[OPEN_FILE_TABLE+[parentrestable+count+1]*4+1]=[OPEN_FILE_TABLE+[parentrestable+count+1]*4+1]+1;
+	endif;
+	
+	 
+	[childrestable+count]=[parentrestable+count];	
+	count=count+1;
+endwhile;
+
+
+//copying the per-process disk map table of the parent to the child
+//this will ensure that the disk block numbers of the code pages of the parent process are copied to the child
+//further, if the parent has swapped out heap pages, those will be shared by the child 
+count=2;
+
+while(count<10)
+do
+	[DISK_MAP_TABLE+childPID*10+count]=[DISK_MAP_TABLE+[SYSTEM_STATUS_TABLE+1]*10+count];
+	count=count+1;
+endwhile;
+
+
+//initializing the page table of the child process
+//recall that stack pages are already initialized above
+count=0;
+
+while(count<16)
+do
+	if(count%2==0 && [parentptbr+count]!=-1)
+	then
+		[MEMORY_FREE_LIST+[parentptbr+count]]=[MEMORY_FREE_LIST+[parentptbr+count]]+1;
+	endif;
+	
+	[childptbr+count]=[parentptbr+count];
+	count=count+1;
+endwhile;
+
+
+//copying contents of the user stack pages of the parent to the user stack pages of the child word by word
+count=0;
+
+while(count<512) do 
+	[([childptbr+16]*512)+count]=[([parentptbr+16]*512)+count];
+	[([childptbr+18]*512)+count]=[([parentptbr+18]*512)+count];
+	
+	count=count+1;
+endwhile;
+
+
+//storing the value in the BP register on top of the kernel stack of child process
+//this value will be used to initialize the BP register of the child process by the scheduler when the child is scheduled for the first time
+[[PROCESS_TABLE+childPID*16+11]*512]=BP;
+
+
+//setting up return values in the user stacks of the parent and the child processes
+[([parentptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=childPID;
+[([childptbr+2*((usersp-1)/512)]*512)+((usersp-1)%512)]=0;
+
+
+//reseting the mode flag and switching to the user stack of the parent process before returning to user mode
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE+1]*16+9]=0;
+SP=usersp;
+
+ireturn;
